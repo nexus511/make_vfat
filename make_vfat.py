@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 import shutil
 import time
+import sys
 
 def prefix_sparse(offset, input, output):
     '''
@@ -38,7 +39,11 @@ def prefix_sparse(offset, input, output):
 
     print("  open(w) %s" % (output))
     fout = os.open(output, os.O_WRONLY | os.O_CREAT, 0o644)
+    size = os.lseek(fin, 0, os.SEEK_END)
+    os.ftruncate(fout, size + offset)
 
+    buffersize = 1024 * 1024 * 64
+    blocksize = 0
     start = 0
     try:
         while True:
@@ -46,21 +51,32 @@ def prefix_sparse(offset, input, output):
             end = os.lseek(fin, start, os.SEEK_HOLE)
             os.lseek(fin, start, os.SEEK_SET)
 
-            print("  copy %10d - %10d" % (start, end))
+            sys.stdout.write("  copy %10d - %10d " % (start, end))
             os.lseek(fout, start + offset, os.SEEK_SET)
             size = end - start
-            count = os.write(fout, os.read(fin, size))
-            
-            if count != size:
-                print("ERROR:  %10d of %10d written" % (size, count))
+            missing = size
+            buffer = [0]
+            while size > 0:
+                length = size
+                if length > buffersize:
+                    size -= buffersize
+                    length = buffersize
+                else:
+                    size = 0
+                buffer = os.read(fin, length)
+                missing -= os.write(fout, buffer)
+                sys.stdout.write("#")
+
+            sys.stdout.write("\n")
+            if missing > 0:
+                print("ERROR:  skipped %d bytes on write written" % (missing))
             start = end
     except:
         pass
-    os.lseek(fout, os.lseek(fin, 0, os.SEEK_END) - 1, os.SEEK_SET)
-    os.write(fout, b'\0')
+
     os.close(fin)
     os.close(fout)
-    
+  
 def main(args, tmp):
     blocksize = 1048576  # 1mb
     part1 = os.path.join(tmp, "part1.img")
@@ -71,23 +87,23 @@ def main(args, tmp):
             return
         print("\ndelete %s..." % (args.output))
         os.remove(args.output)
-        
+
     size = int(args.size) - 1  # decrease by 1 mb for partition header
     print("\ncreating image file...")
     fp = os.open(part1, os.O_WRONLY | os.O_CREAT, 0o644)
     os.ftruncate(fp, blocksize * size)
     os.close(fp)
-    
+
     print("\ncreating filesystem...")
     command = [ "mkfs.vfat", "-n", args.label, part1 ]
     subprocess.check_call(command)
-    
+
     print("\ncopy files...")
     basedir = os.path.abspath(os.path.join(args.source, "files"))
     entries = [os.path.join(basedir, x) for x in os.listdir(basedir)]
     command = [ "mcopy", "-i", part1, "-s", "-v" ] + entries + [ "::", ]
     subprocess.check_call(command)
-    
+
     print("\ncopy file and make room for partition table...")
     prefix_sparse(blocksize, part1, args.output)
 
